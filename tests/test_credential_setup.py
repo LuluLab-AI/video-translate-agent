@@ -18,7 +18,7 @@ class Session:
         return NS(status_code=200, json=lambda: payload)
 
 
-def _start(monkeypatch, *, opener=lambda *_args, **_kwargs: True, session=None, timeout=3):
+def _start(monkeypatch, *, opener=lambda *_args, **_kwargs: True, session=None, timeout=3, ui_language="zh"):
     urls, stored, outcome = [], [], {}
 
     def open_url(url, **_kwargs):
@@ -32,7 +32,7 @@ def _start(monkeypatch, *, opener=lambda *_args, **_kwargs: True, session=None, 
     def run():
         try:
             outcome["result"] = credential_setup.run_credential_setup(
-                timeout_seconds=timeout, session=session or Session())
+                timeout_seconds=timeout, session=session or Session(), ui_language=ui_language)
         except Exception as exc:
             outcome["error"] = str(exc)
 
@@ -59,12 +59,17 @@ def _post(local_url, fields, **headers):
     return urlopen(Request(local_url, data=data, headers=headers), timeout=2)
 
 
-def test_success_validates_before_store_and_never_prints_secret(monkeypatch, capsys):
+@pytest.mark.parametrize("ui_language, success_text", [("zh", "连接成功"), ("en", "Connected successfully")])
+def test_success_validates_before_store_and_never_prints_secret(monkeypatch, capsys, ui_language, success_text):
     secret = "private-browser-key"
-    thread, url, stored, outcome = _start(monkeypatch)
+    thread, url, stored, outcome = _start(monkeypatch, ui_language=ui_language)
+    with urlopen(url, timeout=2) as response:
+        page = response.read().decode()
+        assert f'lang="{ui_language}"' in page
+        assert ("连接 ElevenLabs" if ui_language == "zh" else "Connect ElevenLabs") in page
     csrf = _csrf(url)
     with _post(url, {"csrf": csrf, "action": "connect", "api_key": secret}) as response:
-        assert "连接成功" in response.read().decode()
+        assert success_text in response.read().decode()
     thread.join(2)
     assert outcome["result"] == {"provider": "elevenlabs", "stored": True,
                                   "access_verified": True,
@@ -129,3 +134,81 @@ def test_browser_failure_emits_safe_fallback_url(monkeypatch, capsys):
     diagnostic = capsys.readouterr().err
     assert "BROWSER_OPEN_FAILED" in diagnostic and url in diagnostic
     assert outcome["error"] == "CREDENTIAL_SETUP_CANCELLED"
+
+
+@pytest.mark.parametrize("value", ["zh-CN", "en-US", "pt-BR", "es-ES", "fr-FR", "ja-JP", "ko-KR", "th-TH", "ar-SA", "de-DE", "x-local"])
+def test_bcp47_tags_preserved_without_os_locale(monkeypatch, value):
+    monkeypatch.setenv("LC_ALL", "zh_CN.UTF-8")
+    monkeypatch.setenv("LANG", "ja_JP.UTF-8")
+    assert credential_setup.resolve_ui_language(value) == value
+    assert credential_setup.resolve_ui_language() == "en"
+
+
+def test_english_validation_and_cancel_pages(monkeypatch):
+    thread, url, stored, outcome = _start(monkeypatch, ui_language="en")
+    csrf = _csrf(url)
+    with pytest.raises(HTTPError) as error:
+        _post(url, {"csrf": csrf, "action": "connect", "api_key": ""})
+    page = error.value.read().decode()
+    assert "Please enter your ElevenLabs API Key." in page
+    assert "请输入" not in page
+    with _post(url, {"csrf": csrf, "action": "cancel"}) as response:
+        assert "No API key was saved." in response.read().decode()
+    thread.join(2)
+    assert stored == [] and outcome["error"] == "CREDENTIAL_SETUP_CANCELLED"
+
+
+def test_cli_passes_agent_ui_language(monkeypatch):
+    from video_translate import cli
+    received = {}
+    def setup(**kwargs):
+        received.update(kwargs)
+        return {"stored": True}
+    monkeypatch.setattr(cli, "run_credential_setup", setup)
+    result, code = cli.execute(cli.parser().parse_args([
+        "credential-setup", "--ui-language", "ja-JP", "--json",
+    ]))
+    assert code == 0 and result == {"stored": True}
+    assert received["ui_language"] == "ja-JP"
+
+
+@pytest.mark.parametrize("language, expected", [
+    ("pt-BR", "Conexão concluída"), ("es-ES", "Conexión correcta"),
+    ("fr-FR", "Connexion réussie"), ("ja-JP", "接続しました"),
+    ("ko-KR", "연결 완료"), ("th-TH", "เชื่อมต่อสำเร็จ"),
+    ("ar-SA", "تم الاتصال بنجاح"), ("zh-TW", "連接成功"),
+])
+def test_multilingual_wizard_success(monkeypatch, language, expected):
+    thread, url, stored, outcome = _start(monkeypatch, ui_language=language)
+    with urlopen(url, timeout=2) as response:
+        body = response.read().decode()
+        assert f'lang="{language}"' in body
+        assert 'dir="rtl"' in body if language == "ar-SA" else 'dir="ltr"' in body
+    csrf = _csrf(url)
+    with _post(url, {"csrf": csrf, "action": "connect", "api_key": "fixture-key"}) as response:
+        assert expected in response.read().decode()
+    thread.join(2)
+    assert outcome["result"]["stored"] is True
+
+
+@pytest.mark.parametrize("language", ["pt-BR", "es-ES", "fr-FR", "ja-JP", "ko-KR", "th-TH", "ar-SA"])
+def test_all_wizard_error_paths_use_selected_language(monkeypatch, language):
+    from video_translate.interaction_language import ui_catalog
+    labels = ui_catalog(language)
+    class FailedSession:
+        def request(self, *_args, **_kwargs):
+            return NS(status_code=401)
+    thread, url, stored, outcome = _start(monkeypatch, ui_language=language, session=FailedSession())
+    csrf = _csrf(url)
+    for fields, expected in [
+        ({"csrf": "wrong", "action": "connect"}, labels["forbidden"]),
+        ({"csrf": csrf, "action": "connect", "api_key": ""}, labels["empty"]),
+        ({"csrf": csrf, "action": "connect", "api_key": "fixture-key"}, labels["CREDENTIAL_PERMISSION_INSUFFICIENT"]),
+    ]:
+        with pytest.raises(HTTPError) as error:
+            _post(url, fields)
+        assert expected in unescape(error.value.read().decode())
+    with _post(url, {"csrf": csrf, "action": "cancel"}) as response:
+        assert labels["cancel_detail"] in unescape(response.read().decode())
+    thread.join(2)
+    assert not stored and outcome["error"] == "CREDENTIAL_SETUP_CANCELLED"

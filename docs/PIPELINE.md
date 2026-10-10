@@ -9,23 +9,25 @@
 | credential-set --provider <name> --stdin | 仅在用户主动通过聊天提供 Key 时，由 Agent 经进程标准输入保存 |
 | credential-status | 只列出已配置的 Provider，不输出 Key |
 | credential-delete --provider <name> | 删除指定 Provider 的已保存凭据 |
-| preflight [--provider <name>] | 本机工具、滤镜、编码器、faster-whisper、LZStudio CLI 和所选 TTS Provider Key；默认 ElevenLabs。灵智凭据仅报告为延后就绪信息，不阻断启动 |
+| preflight [--provider <name>] | 本机工具、滤镜、编码器、faster-whisper、Node.js 18+、内置 LuluLab 客户端和所选 TTS Provider Key；默认 ElevenLabs。LuluLab 凭据仅报告为延后就绪信息，不阻断启动 |
 | create --input <video> [--cleanup-mode local] | 验证视频并冻结清除模式，创建 jobs/<id>/manifest.json，CREATED |
 | transcribe --job <id> --source <auto/语言> --target <语言> | 保存 LANG_CONFIRMED，提取源音轨，Faster Whisper、resegment，写 segments_raw.json，TRANSCRIBED |
-| clean --job <id> | 稀疏 OCR/Track 构建 → 服务端清理策略/字幕布局（上传OCR文字、位置和时间等元数据，不上传媒体） → local: 动态 mask → CUDA/MPS STTN（auto）或 OpenCV，写 clean/video.mp4 与布局/报告，CLEANED |
+| clean --job <id> | 稀疏 OCR/Track 构建 → 服务端清理策略/字幕布局（上传OCR文字、位置和时间等元数据，不上传媒体） → local: 动态 mask → 默认 CUDA/MPS STTN AI 时序擦除修复（必要时回退 OpenCV），写 clean/video.mp4 与布局/报告，CLEANED |
 | validate-polish --job <id> | 校验 Agent 只改 text 的 segments_polished.json，写统一 Segment 快照，POLISHED |
 | validate-translation --job <id> | 校验 Agent 本地填写的目标译文并提交 segments_translated.json，TRANSLATED |
 | voices --job <id> | 获取实际 Provider/voice ID，保存 voices.json，WAITING_VOICE |
 | dub --job <id> --provider <name> --voice-id <id> | 保存一次选择，逐段 TTS/规范化/缓存，DUBBED；恢复可省略已保存选择 |
-| align --job <id> | 实测 TTS → LZStudio CLI 请求远端对齐计划 → 本地执行变速/拉长并生成 target.wav、aligned/video.mp4、final_*，ALIGNED |
+| align --job <id> | 实测 TTS → Node.js LuluLab 客户端请求远端对齐计划 → 本地执行变速/拉长并生成 target.wav、aligned/video.mp4、final_*，ALIGNED |
 | render --job <id> | SRT/ASS、hard burn、输出 MP4，RENDERED；验证可解码/指纹并截取预览后 DONE |
 | status --job <id> | 只读返回 manifest、完整性问题、resume_from、next_action |
 
 ## Agent 操作
 
-灵智工坊凭据也支持安全持久保存。启动、创建任务和转写阶段不得提醒或索取灵智 Key；转写完成、首次执行 `clean` 之前才检查 `policy_credential_available`。缺失时提示：`即将进行字幕清理，需要灵智工坊 API Key。请前往 https://www.lingzhiai.com.cn/ 获取。` 该网址必须原样保留 `www`，不得缩写为无 `www` 的不可用地址。优先提供 `credential-set --provider lingzhi` 的本机隐藏输入，不默认要求把 Key 发到聊天。用户主动在聊天里提供 `LINGZHI_API_KEY` 或 `LZSTUDIO_API_KEY` 用于当前工作流时，Agent 启动 `credential-set --provider lingzhi --stdin --json`，通过标准输入发送原始 Key 和一个换行；`lzstudio` 是同义 Provider。不得把 Key 插入命令、任务文件、日志、回复或临时文件。保存到现有私有本机凭据后，只检查 Provider 名称并重跑 preflight；后续自动复用。环境变量优先于已存凭据。用户可明确请求 `credential-delete --provider lingzhi --json` 删除。聊天输入为用户主动选择，需提醒原消息可能留在聊天历史；意外披露应删除原消息并轮换 Key。
+LuluLab 凭据支持安全持久保存。启动、创建任务和转写阶段不得提醒或索取 LuluLab Key；转写完成、首次执行 `clean` 之前才检查 `policy_credential_available`。缺失时提示：`即将进行字幕清理，需要 LuluLab API Key。请从 LuluLab 官方渠道获取。` 未配置新官网地址时不得猜测或复用旧品牌网址。优先提供 `credential-set --provider lululab` 的本机隐藏输入，不默认要求把 Key 发到聊天。用户主动在聊天里提供 `LULULAB_API_KEY` 用于当前工作流时，Agent 启动 `credential-set --provider lululab --stdin --json`，通过标准输入发送原始 Key 和一个换行。迁移期兼容旧环境变量 `LINGZHI_API_KEY`、`LZSTUDIO_API_KEY` 与旧凭据别名 `lingzhi`、`lzstudio`，但保存和状态输出统一使用 `lululab`。不得把 Key 插入命令、任务文件、日志、回复或临时文件。保存到现有私有本机凭据后，只检查 Provider 名称并重跑 preflight；后续自动复用。环境变量优先于已存凭据。用户可明确请求 `credential-delete --provider lululab --json` 删除。聊天输入为用户主动选择，需提醒原消息可能留在聊天历史；意外披露应删除原消息并轮换 Key。
 
-严格按 [SKILL.md](../SKILL.md)：源语言默认使用 `auto` 且不询问用户；用户明确指定时使用其选择，仅在自动检测失败或结果不可用时询问源语言。目标语言未提供时只询问目标语言。TTS Provider 默认使用 ElevenLabs，仅在用户明确指定时改用 MiniMax；不在 ElevenLabs 失败时静默回退。默认 preflight 返回 `ELEVENLABS_CREDENTIAL_REQUIRED` 时，Agent 立即运行 `credential-setup --json`，不要求用户输入命令。浏览器向导仍是默认入口；只有用户主动选择或已经在聊天中发来 Key 时，Agent 才可用交互进程的标准输入保存，并且不得复述 Key。成功后自动重跑 preflight。翻译后只展示已选 Provider 的真实音色列表，并进行一次 Voice 选择。除此之外不设置正常暂停点。Agent 使用当前模型完成润色和目标翻译，不调用 Microsoft、其他翻译 Provider、额外 LLM API、其他 Agent、CLI 或文本生成服务；Python 只验证文件结构并提交阶段产物。
+严格按 [SKILL.md](../SKILL.md)：源语言默认使用 `auto` 且不询问用户；用户明确指定时使用其选择，仅在自动检测失败或结果不可用时询问源语言。目标语言未提供时只询问目标语言。TTS Provider 默认使用 ElevenLabs，仅在用户明确指定时改用 MiniMax；不在 ElevenLabs 失败时静默回退。默认 preflight 返回 `ELEVENLABS_CREDENTIAL_REQUIRED` 时，Agent 立即运行 `credential-setup --language-context <absolute-context-path> --json`，不要求用户输入命令。浏览器向导仍是默认入口；只有用户主动选择或已经在聊天中发来 Key 时，Agent 才可用交互进程的标准输入保存，并且不得复述 Key。成功后自动重跑 preflight。翻译后只展示已选 Provider 的真实音色列表，并进行一次 Voice 选择。除此之外不设置正常暂停点。Agent 使用当前模型完成润色和目标翻译，不调用 Microsoft、其他翻译 Provider、额外 LLM API、其他 Agent、CLI 或文本生成服务；Python 只验证文件结构并提交阶段产物。
+
+交互语言统一使用任务保存的 `interactionLocale`；优先级为用户显式回复语言、当前任务消息主语言、已有任务语言、智能体默认回复语言、English。不读取操作系统 Locale。`credential-setup --language-context <path>` 复用任务语言，`--ui-language <BCP-47-tag>` 支持任意合法标签；非中文语言不再强制回退英文。多语言页面和本地扩展文案按 [INTERACTION_LANGUAGE.md](INTERACTION_LANGUAGE.md) 执行。交互语言不覆盖 manifest 中独立的源语言和目标语言。
 
 `credential-setup` 仅绑定 `127.0.0.1`，使用随机 URL token、CSRF、请求大小限制、`no-store` 和严格 CSP。页面指导用户在 ElevenLabs 创建 `video-translate-agent` Key，开启 `text_to_speech`、`voices_read`、`models_read`，并设置额度上限与可选有效期。Key 仅在内存中验证；macOS 写入目录权限 `700`、文件权限 `600` 的当前用户凭据文件，不使用 Keychain；Windows 写入 Credential Manager。取消、失败或十分钟超时不保存。浏览器打开失败时使用 stderr 中的 `setup_url`；本地向导不可用时才降级到 `credential-set --provider elevenlabs`。
 
@@ -53,7 +55,7 @@
 |---|---|
 | CREATED | 目标语言已知时以显式源语言或默认 `auto` 执行 transcribe；仅目标语言缺失时询问 |
 | LANG_CONFIRMED | 使用已保存语言 transcribe |
-| TRANSCRIBED | 首先检查延后的灵智 Key；缺失时提供官网入口，配置后确认元数据授权，再执行 clean |
+| TRANSCRIBED | 首先检查延后的 LuluLab Key；缺失时提供官方获取指引，配置后确认元数据授权，再执行 clean |
 | CLEANED | Agent 自动润色并 validate-polish |
 | POLISHED | Agent 本地翻译 segments_translation.json 后 validate-translation |
 | TRANSLATED | voices |
@@ -70,9 +72,11 @@
 
 前置已获用户授权时，可按上述 CLI 走完整短视频 E2E；没有音色选择则到 WAITING_VOICE 把实际列表交给用户。成片必须通过 ffprobe 流/时长/编码检查、FFmpeg 完整解码和源文件 SHA-256 不变等技术完整性检查；不增加人工 preview 质量关卡。真实服务与测试详情见 [验收记录](VALIDATION.md)。
 
-本地 cleanup.backend 默认 auto，设备选择 CUDA → MPS → OpenCV；报告包含 backend/device/fallback_reason。STTN 使用 Skill 内权重，每段 2.5 秒、300 秒超时，内存不足最多两次减半重试；失败后整段回退 OpenCV，复用本地 OCR 分析。分段缓存带输入/输出指纹，已 CLEANED/DONE 的任务不重新处理。preflight 的 STTN 可选能力不加入阻断性 errors。
+本地 `cleanup.backend` 默认 `sttn`，设备选择 CUDA → MPS；使用 STTN AI 时序方案擦除字幕并修复连续帧。无可用设备或 STTN 失败时才整段回退 OpenCV，报告包含 backend/device/fallback_reason。STTN 使用 Skill 内权重，每段 2.5 秒、300 秒超时，内存不足最多两次减半重试；回退时复用本地 OCR 分析。分段缓存带输入/输出指纹，已 CLEANED/DONE 的任务不重新处理。preflight 的 STTN 可选能力不加入阻断性 errors。旧的 `auto` 配置继续支持能力选择，显式 `opencv` 继续强制兼容方案。
 
-灵智服务返回 `SKILL_SERVICE_UNAVAILABLE` 时停止提交，保留任务与已完成产物，提示：Skill授权异常，请联系管理员处理，微信：marlon1102。管理员恢复服务后按已有指纹恢复协议继续；网络超时和依赖错误仍按各自错误码恢复。
+OCR 轨迹在策略提交前必须通过稳定性门控：常规视频默认至少 3 个采样帧观测；极短视频按计划采样数降低有效阈值，以容忍精确尾帧 seek 失败。低于阈值的瞬时识别不进入分类、清理和字幕布局；若稳定轨迹为空，客户端将布局约束为 `no_stable_source_caption_evidence`（`default: null`），渲染器使用底部安全位置。该门控只否决证据不足的轨迹，不在本地替代远端分类。
+
+LuluLab 服务返回 `SKILL_SERVICE_UNAVAILABLE` 时停止提交，保留任务与已完成产物，按保存的交互语言翻译同一含义（以下仅为中英文参考）：中文为“Skill授权异常，请联系管理员处理，微信：marlon1102”；英文为“Skill authorization error. Please contact the administrator via WeChat: marlon1102”。管理员恢复服务后按已有指纹恢复协议继续；网络超时和依赖错误仍按各自错误码恢复。
 
 
 策略更新：两个动作共用一个工作流入口；接口 schema_version 与 policy_version 分开。缓存文件为 cleanup_policy_result.json / alignment_policy_result.json；客户授权记录为 policy_consent.json。客户端不包含清理分类和主字幕带评分规则。详细恢复和一次授权流程以 SKILL.md 为准。

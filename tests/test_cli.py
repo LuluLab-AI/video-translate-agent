@@ -16,7 +16,7 @@ from video_translate import credentials
 def empty_system_keyring(monkeypatch):
     monkeypatch.setattr("video_translate.config.read_credential", lambda provider: None)
     monkeypatch.setattr("video_translate.cli.policy_capabilities", lambda: {
-        "policy_cli_available": True, "policy_credential_available": True,
+        "policy_client_available": True, "policy_credential_available": True,
         "policy_workflow_id": "VideoTranslatePolicyV1", "policy_errors": []})
 
 
@@ -76,20 +76,20 @@ def test_preflight_reports_cleanup_dependencies(monkeypatch, capsys):
     assert result["errors"] == ["RAPIDOCR_UNAVAILABLE", "ONNXRUNTIME_UNAVAILABLE"]
 
 
-def test_preflight_defers_missing_lingzhi_credential(monkeypatch, capsys):
+def test_preflight_defers_missing_lululab_credential(monkeypatch, capsys):
     monkeypatch.setenv("ELEVENLABS_API_KEY", "private-preflight-key")
     monkeypatch.setattr("video_translate.cli.Media.capabilities", lambda self: {"capabilities": {}, "errors": []})
     monkeypatch.setattr("importlib.util.find_spec", lambda name: object())
     monkeypatch.setattr("video_translate.cli.policy_capabilities", lambda: {
-        "policy_cli_available": True,
+        "policy_client_available": True,
         "policy_credential_available": False,
         "policy_workflow_id": "VideoTranslatePolicyV1",
-        "policy_errors": ["LINGZHI_CREDENTIAL_REQUIRED"],
+        "policy_errors": ["LULULAB_CREDENTIAL_REQUIRED"],
     })
     assert main(["preflight", "--json"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["errors"] == []
-    assert result["deferred_policy_errors"] == ["LINGZHI_CREDENTIAL_REQUIRED"]
+    assert result["deferred_policy_errors"] == ["LULULAB_CREDENTIAL_REQUIRED"]
     assert result["policy_credential_required_at"] == "clean"
     assert result["startup_ready"] is True
     assert result["full_pipeline_ready"] is False

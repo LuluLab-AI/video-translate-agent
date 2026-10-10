@@ -1,15 +1,13 @@
 """Optional GPU cleanup with bounded inference, verified caches and OpenCV fallback."""
-import hashlib,importlib.util,json,platform,subprocess,sys,os,time,urllib.request
+import hashlib,importlib.util,json,platform,subprocess,sys,os,time
 from pathlib import Path
 from .config import PROJECT_ROOT
 from .files import write_json,read_json
 from .state import fingerprint
 
 WEIGHTS=Path(__file__).parent/"vendor/sttn/sttn.pth"
-# Frozen checkpoint. Marketplace packages fetch this release asset on GPU hosts.
+# Frozen bundled checkpoint; repair only from an identical local packaged copy.
 WEIGHT_HASH='25b0c2c30042d82efd1893bd42ec726764262d94115393a1718f8d65d2a7817b'
-WEIGHT_URL='https://github.com/devmaster947-hub/video-translate-agent/releases/download/v2.3.5/sttn.pth'
-WEIGHT_MAX_BYTES=70*1024*1024
 
 class STTNError(RuntimeError):pass
 
@@ -49,35 +47,17 @@ def capabilities():
     return {"sttn_dependency_available":available,"sttn_weights_available":WEIGHTS.is_file(),
             "sttn_devices":devices,"sttn_hardware_hint":hardware_hint()}
 
-def ensure_weights():
-    if WEIGHTS.is_file() and fingerprint(WEIGHTS)==WEIGHT_HASH:return True
-    WEIGHTS.parent.mkdir(parents=True,exist_ok=True)
-    temporary=WEIGHTS.with_suffix(".pth.download")
-    temporary.unlink(missing_ok=True)
-    request=urllib.request.Request(WEIGHT_URL,headers={"User-Agent":"video-translate-agent/2.3.5"})
-    try:
-        total=0
-        with urllib.request.urlopen(request,timeout=120) as response,temporary.open("wb") as target:
-            while True:
-                chunk=response.read(1024*1024)
-                if not chunk:break
-                total+=len(chunk)
-                if total>WEIGHT_MAX_BYTES:raise STTNError("STTN_WEIGHTS_DOWNLOAD_TOO_LARGE")
-                target.write(chunk)
-        if fingerprint(temporary)!=WEIGHT_HASH:raise STTNError("STTN_WEIGHTS_INVALID")
-        temporary.replace(WEIGHTS)
-        return True
-    except (OSError,STTNError):
-        temporary.unlink(missing_ok=True)
-        return False
-
 def select_backend(backend,repair=True):
     if backend=="opencv":return "opencv","cpu",None
     caps=capabilities()
     if not caps["sttn_devices"] and repair and caps["sttn_hardware_hint"]:
         setup_dependencies();caps=capabilities()
     if caps["sttn_devices"] and (not WEIGHTS.is_file() or fingerprint(WEIGHTS)!=WEIGHT_HASH):
-        ensure_weights()
+        # Installed Skill remains self-contained; wheel copy may repair missing weights.
+        import shutil
+        for copy in [PROJECT_ROOT/"dist/staging-v2.2.0/video-translate-agent/video_translate/vendor/sttn/sttn.pth"]:
+            if copy.is_file() and fingerprint(copy)==WEIGHT_HASH:
+                WEIGHTS.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(copy,WEIGHTS);break
         caps=capabilities()
     if not caps["sttn_devices"]:
         reason="STTN_NO_GPU" if caps["sttn_dependency_available"] or not caps["sttn_hardware_hint"] else "STTN_DEPENDENCY_UNAVAILABLE"

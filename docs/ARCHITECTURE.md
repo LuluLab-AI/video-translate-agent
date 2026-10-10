@@ -15,7 +15,7 @@ Agent 负责两次用户选择、当前模型保守润色、本地目标翻译�
 | asr.py、resegment.py、polish.py、translation.py | Faster Whisper、定稿前断句、Agent 润色与本地译文投影/校验 |
 | overlay_detection.py | 稀疏 RapidOCR、文字 Track 构建；调用服务端 cleanup_policy 分类及生成布局 |
 | overlay_mask.py、cleanup.py | 本地模式：三帧空间锚点、逐帧动态字形 mask、自适应 ROI 修补；三方模式：保留 OCR/布局分析后调用独立字幕清除工作流 |
-| policy_client.py | 通过 LZStudio CLI 提交/轮询远端策略任务；负责两种策略的契约封装、缓存与验证 |
+| policy_client.py、scripts/lululab_cli.mjs | Python 负责策略契约、缓存与恢复；Node.js 负责 LuluLab HTTP 提交/查询 |
 | network.py | TTS Provider 有限 HTTPS 重试与稳定错误码 |
 | tts/base.py、tts/minimax.py、tts/elevenlabs.py | list_voices / synthesize 统一接口 |
 | dubbing.py | 每段 TTS、签名与 SHA-256 缓存、48kHz PCM WAV |
@@ -48,11 +48,11 @@ TTS 逐段输出 tts/0001.wav 等，PCM s16le、48000Hz、双声道；真实 dur
 
 清理决策与音画对齐均由 VideoTranslatePolicyV1 决定，分别使用 cleanup_policy 和 alignment_policy。policy_client.py 只负责提交、轮询、缓存和契约验证，不在本地重算策略。
 
-清理阶段的 OCR 与轨迹提取在本地执行；OCR文字、位置、时间及原口播分段时间发送给服务端，由服务端决定文字类别、清理资格和字幕布局。local 模式执行动态 mask，自动选择可用 CUDA/MPS STTN，否则 OpenCV。
+清理阶段的 OCR 与轨迹提取在本地执行；OCR文字、位置、时间及原口播分段时间发送给服务端，由服务端决定文字类别、清理资格和字幕布局。local 模式默认执行动态 mask 与 CUDA/MPS STTN AI 时序擦除修复；STTN 不可用或失败时才回退 OpenCV。
 
 对齐阶段服务端仅接收视频时长以及每段的 ID、起点和实测 TTS 时长；返回 `AlignmentPlan`，包括每段目标时长、音频速度和视频 stretch 因子。`alignment.py` 只执行并实测，不重算策略。
 
-n8n 工作流没有 LLM 节点，策略调用的 LLM Token 成本为 0。Webhook保留附件HeaderAuth，客户端通过LZStudio CLI / 上层任务服务调用。
+n8n 工作流没有 LLM 节点，策略调用的 LLM Token 成本为 0。Node.js 客户端按 LuluLab Customer Service v1 文档直接调用 `POST /tasks` 与 `GET /tasks/{id}`，API Key 原值放入 `Authorization` Header；workflow ID 与策略输入输出保持不变。
 
 ## 状态、锁与恢复
 
@@ -64,7 +64,7 @@ workflow 持有整个命令的 OS 文件锁；嵌套 state 写入复用当前线
 
 ## 成片与 Windows
 
-全部原声音删除；最终仅清理画面 + 目标 TTS + 目标 ASS。无 Demucs、Vocal/Instrument、BGM 保留、ducking、原声混音、环境音恢复，也不引入 ProPainter、LaMa 或 SAM。OCR 低频均匀采样并在本地形成 Track；文字分类、清理资格和目标字幕位置由服务端清理策略决定。本地模式只对获准清理的 Track 构造逐帧动态 mask 并执行 CUDA/MPS STTN 或 OpenCV 修复。alignment 在 CLEANED 后强制读取 clean/video.mp4，并只执行服务端返回的对齐计划。
+全部原声音删除；最终仅清理画面 + 目标 TTS + 目标 ASS。无 Demucs、Vocal/Instrument、BGM 保留、ducking、原声混音、环境音恢复，也不引入 ProPainter、LaMa 或 SAM。OCR 低频均匀采样并在本地形成 Track；文字分类、清理资格和目标字幕位置由服务端清理策略决定。本地模式只对获准清理的 Track 构造逐帧动态 mask，默认执行 CUDA/MPS STTN AI 时序修复，必要时兼容回退 OpenCV。alignment 在 CLEANED 后强制读取 clean/video.mp4，并只执行服务端返回的对齐计划。
 
 ASS 只使用 final_* 时间轴。字幕位置来自客户端 `subtitle_layout.json`，无有效布局时由渲染层使用安全默认位置；布局由服务端清理策略生成。字幕样式、换行、背景框和最终编码仍属于客户端执行层。
 

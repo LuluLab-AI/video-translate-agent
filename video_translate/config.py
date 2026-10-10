@@ -67,11 +67,14 @@ class CleanupConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     enabled: bool = True
     mode: Literal["local"] = "local"
-    backend: Literal["auto", "sttn", "opencv"] = "auto"
+    backend: Literal["auto", "sttn", "opencv"] = "sttn"
     sttn_chunk_seconds: float = Field(default=2.5, gt=0, le=2.5, allow_inf_nan=False)
     sttn_timeout_seconds: float = Field(default=300, gt=0, allow_inf_nan=False)
     sample_fps: float = Field(default=4.0, gt=0, allow_inf_nan=False)
     max_ocr_frames: int = Field(default=240, ge=1)
+    # A one- or two-frame OCR hit is too unstable to justify destructive cleanup
+    # or to define the target subtitle band.
+    min_ocr_track_observations: int = Field(default=3, ge=1)
     detect_subtitles: bool = True
     detect_watermarks: bool = True
     min_ocr_confidence: float = Field(default=0.45, ge=0, le=1)

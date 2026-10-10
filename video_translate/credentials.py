@@ -14,8 +14,11 @@ from keyring.errors import KeyringError
 SERVICE_NAME = "video-translate-agent"
 LEGACY_SERVICE_NAME = "video-translate-skill"
 PROVIDERS = ("minimax", "elevenlabs")
-STORED_PROVIDERS = (*PROVIDERS, "lingzhi")
-CREDENTIAL_PROVIDERS = (*STORED_PROVIDERS, "lzstudio")
+POLICY_PROVIDER = "lululab"
+LEGACY_POLICY_PROVIDERS = ("lingzhi", "lzstudio")
+STORED_PROVIDERS = (*PROVIDERS, POLICY_PROVIDER)
+CREDENTIAL_PROVIDERS = (*STORED_PROVIDERS, *LEGACY_POLICY_PROVIDERS)
+LOCAL_CREDENTIAL_NAMES = (*STORED_PROVIDERS, *LEGACY_POLICY_PROVIDERS)
 MAX_CREDENTIAL_CHARS = 4096
 
 
@@ -50,7 +53,7 @@ def _read_local_credentials(*, strict: bool) -> dict[str, str]:
         if not isinstance(data, dict):
             raise ValueError
         return {name: value.strip() for name, value in data.items()
-                if name in STORED_PROVIDERS and isinstance(value, str) and value.strip()}
+                if name in LOCAL_CREDENTIAL_NAMES and isinstance(value, str) and value.strip()}
     except CredentialError:
         if strict:
             raise
@@ -93,8 +96,8 @@ def _write_local_credentials(values: dict[str, str]) -> None:
 
 def _provider(provider: str) -> str:
     value = provider.strip().lower()
-    if value == "lzstudio":
-        value = "lingzhi"
+    if value in LEGACY_POLICY_PROVIDERS:
+        value = POLICY_PROVIDER
     if value not in STORED_PROVIDERS:
         raise CredentialError("UNSUPPORTED_CREDENTIAL_PROVIDER")
     return value
@@ -104,16 +107,32 @@ def read_credential(provider: str, *, strict: bool = False) -> str | None:
     """Read a credential without exposing backend details in errors."""
     name = _provider(provider)
     if _uses_local_user_file():
-        return _read_local_credentials(strict=strict).get(name)
-    try:
-        value = keyring.get_password(SERVICE_NAME, name)
-        if not value:
-            value = keyring.get_password(LEGACY_SERVICE_NAME, name)
+        values = _read_local_credentials(strict=strict)
+        value = values.get(name)
+        if not value and name == POLICY_PROVIDER:
+            value = next((values.get(alias) for alias in LEGACY_POLICY_PROVIDERS
+                          if values.get(alias)), None)
             if value:
-                try:
-                    keyring.set_password(SERVICE_NAME, name, value)
-                except (KeyringError, RuntimeError, OSError):
-                    pass
+                values[name] = value
+                for alias in LEGACY_POLICY_PROVIDERS:
+                    values.pop(alias, None)
+                _write_local_credentials(values)
+        return value
+    try:
+        lookup_names = (name, *LEGACY_POLICY_PROVIDERS) if name == POLICY_PROVIDER else (name,)
+        value = None
+        for service in (SERVICE_NAME, LEGACY_SERVICE_NAME):
+            for lookup_name in lookup_names:
+                value = keyring.get_password(service, lookup_name)
+                if value:
+                    if service != SERVICE_NAME or lookup_name != name:
+                        try:
+                            keyring.set_password(SERVICE_NAME, name, value)
+                        except (KeyringError, RuntimeError, OSError):
+                            pass
+                    break
+            if value:
+                break
     except (KeyringError, RuntimeError, OSError):
         if strict:
             raise CredentialError("SYSTEM_KEYRING_UNAVAILABLE") from None
@@ -121,10 +140,10 @@ def read_credential(provider: str, *, strict: bool = False) -> str | None:
     return value.strip() if value and value.strip() else None
 
 
-def store_credential(provider: str) -> None:
+def store_credential(provider: str, *, prompt: str | None = None) -> None:
     """Prompt without echo and persist a credential in the system keyring."""
     name = _provider(provider)
-    value = getpass(f"Enter {name} API key (input hidden): ").strip()
+    value = getpass(prompt if prompt is not None else f"Enter {name} API key (input hidden): ").strip()
     store_credential_value(name, value)
 
 
@@ -160,9 +179,12 @@ def delete_credential(provider: str) -> bool:
     name = _provider(provider)
     if _uses_local_user_file():
         values = _read_local_credentials(strict=True)
-        if name not in values:
+        names = (name, *LEGACY_POLICY_PROVIDERS) if name == POLICY_PROVIDER else (name,)
+        found = any(candidate in values for candidate in names)
+        if not found:
             return False
-        del values[name]
+        for candidate in names:
+            values.pop(candidate, None)
         if values:
             _write_local_credentials(values)
         else:
@@ -174,9 +196,11 @@ def delete_credential(provider: str) -> bool:
     if read_credential(name, strict=True) is None:
         return False
     try:
+        names = (name, *LEGACY_POLICY_PROVIDERS) if name == POLICY_PROVIDER else (name,)
         for service in (SERVICE_NAME, LEGACY_SERVICE_NAME):
-            if keyring.get_password(service, name) is not None:
-                keyring.delete_password(service, name)
+            for candidate in names:
+                if keyring.get_password(service, candidate) is not None:
+                    keyring.delete_password(service, candidate)
     except (KeyringError, RuntimeError, OSError):
         raise CredentialError("SYSTEM_KEYRING_UNAVAILABLE") from None
     return True

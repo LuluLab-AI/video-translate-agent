@@ -11,11 +11,12 @@ subtitles:
 cleanup:
   enabled: true
   mode: local
-  backend: auto
+  backend: sttn
   sttn_chunk_seconds: 2.5
   sttn_timeout_seconds: 300
   sample_fps: 4.0
   max_ocr_frames: 240
+  min_ocr_track_observations: 3
   detect_subtitles: true
   detect_watermarks: true
   min_ocr_confidence: 0.45

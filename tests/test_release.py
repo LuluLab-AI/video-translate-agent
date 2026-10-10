@@ -34,16 +34,16 @@ def test_release_payload_excludes_runtime_and_scan_passes():
     assert release.scan(release.ROOT)['ok']
 
 
-def test_lingzhi_key_url_keeps_required_www():
-    canonical = "https://www.lingzhiai.com.cn/"
-    unusable = "https://" + "lingzhiai.com.cn/"
+def test_customer_guidance_uses_lululab_brand_without_retired_url():
+    retired = "https://www." + "lingzhiai.com.cn/"
     for relative in ("SKILL.md", "README.md", "docs/PIPELINE.md"):
         text = (release.ROOT / relative).read_text(encoding="utf-8")
-        assert canonical in text
-        assert unusable not in text
+        assert "LuluLab" in text
+        assert retired not in text
 
 
-def test_release_uses_external_platform_cli_assets():
+def test_release_includes_node_cli_and_excludes_runtime_weights():
     paths = release.payload(release.ROOT)
-    assert release.ROOT / 'bin/macos/lzstudio' not in paths
-    assert release.ROOT / 'bin/windows/lzstudio.exe' not in paths
+    assert release.ROOT / 'scripts/lululab_cli.mjs' in paths
+    assert release.ROOT / 'README.zh-CN.md' in paths
+    assert release.ROOT / 'video_translate/vendor/sttn/sttn.pth' not in paths

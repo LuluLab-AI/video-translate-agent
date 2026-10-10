@@ -100,6 +100,38 @@ def build_text_tracks(observations: list[dict], sample_interval_ms: float = 250)
     return tracks
 
 
+def filter_stable_text_tracks(tracks: list[dict], min_observations: int = 3) -> tuple[list[dict], dict]:
+    """Reject transient OCR noise before it can influence cleanup or layout.
+
+    This is an evidence-quality filter, not a subtitle classifier.  The remote
+    policy still classifies every retained track, while isolated OCR hits never
+    become destructive masks or a false dominant caption band.
+    """
+    if min_observations < 1:
+        raise ValueError("min_observations must be positive")
+    stable = []
+    discarded = []
+    for track in tracks:
+        observations = track.get("observations", [])
+        if len(observations) >= min_observations:
+            stable.append(track)
+        else:
+            discarded.append(track)
+    return stable, {
+        "min_observations": min_observations,
+        "discarded_track_count": len(discarded),
+        "discarded_observation_count": sum(len(track.get("observations", [])) for track in discarded),
+    }
+
+
+def effective_min_track_observations(configured: int, sample_count: int) -> int:
+    """Keep the configured guard while allowing very short videos to be testable."""
+    if configured < 1 or sample_count < 1:
+        raise ValueError("observation thresholds must be positive")
+    # Seeking the exact final timestamp can legitimately miss the last frame.
+    return min(configured, max(1, sample_count - 1))
+
+
 def _median(values):
     ordered = sorted(values)
     middle = len(ordered) // 2
@@ -159,7 +191,11 @@ def analyze_video(video, segments, config, engine=None, *, job_id=None, policy_r
     finally:
         capture.release()
     interval = duration_ms / max(1, len(timestamps) - 1)
-    tracks = build_text_tracks(observations, interval)
+    raw_tracks = build_text_tracks(observations, interval)
+    effective_min = effective_min_track_observations(
+        config.min_ocr_track_observations, len(timestamps))
+    tracks, ocr_filter = filter_stable_text_tracks(raw_tracks, effective_min)
+    ocr_filter["configured_min_observations"] = config.min_ocr_track_observations
     for index, track in enumerate(tracks, 1):
         track["start_ms"] = max(0, round(track["start_ms"] - interval / 2))
         track["end_ms"] = min(duration_ms, round(track["end_ms"] + interval))
@@ -174,6 +210,7 @@ def analyze_video(video, segments, config, engine=None, *, job_id=None, policy_r
     analysis = {"version": 1, "video": {"width": width, "height": height,
                 "duration_ms": duration_ms}, "sample_timestamps_ms": timestamps,
                 "ocr_seconds": round(time.perf_counter() - started, 3), "tracks": tracks,
+                "ocr_track_filter": ocr_filter,
                 "cleanup_policy_backend": "remote",
                 "watermark_groups": watermark_groups}
     return analysis, layout

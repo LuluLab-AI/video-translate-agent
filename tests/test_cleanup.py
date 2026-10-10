@@ -19,9 +19,8 @@ class FakeOCR:
 
     def __call__(self, frame, **kwargs):
         self.calls += 1
-        text = "FIRST MESSAGE" if self.calls == 1 else "SECOND OFFER"
         return NS(boxes=np.array([[[45, 80], [275, 80], [275, 110], [45, 110]]]),
-                  txts=(text,), scores=(.99,))
+                  txts=("ORIGINAL SUBTITLE",), scores=(.99,))
 
 
 class FakeMedia:

@@ -11,6 +11,9 @@ try {
         & $tool -version *> $null
         if ($LASTEXITCODE -ne 0) { throw "$tool could not run. Check PATH." }
     }
+    $nodeCommand = Get-Command node -ErrorAction Stop
+    & $nodeCommand.Source -e "process.exit(Number(process.versions.node.split('.')[0]) >= 18 ? 0 : 1)"
+    if ($LASTEXITCODE -ne 0) { throw 'Install Node.js 18 or newer and add node to PATH.' }
     Push-Location -LiteralPath $PSScriptRoot
     try {
         & $pythonCommand.Source -m venv .venv

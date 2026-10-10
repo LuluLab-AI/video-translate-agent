@@ -1,0 +1,27 @@
+name: Validate Skill
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install test dependencies
+        run: |
+          sudo apt-get update && sudo apt-get install -y ffmpeg
+          python -m pip install -e ".[test]" pyyaml
+      - name: Validate package and scan source
+        run: python scripts/ci_validate.py
+      - name: Run local tests without paid API calls
+        run: |
+          python -m pytest -q tests
+          node --test tests/test_lululab_cli.mjs
+          python scripts/release.py scan

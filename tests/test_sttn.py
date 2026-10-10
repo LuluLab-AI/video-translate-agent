@@ -16,10 +16,13 @@ def caps(device_list,dependency=True,hint=None):
     return {"sttn_devices":device_list,"sttn_dependency_available":dependency,
         "sttn_weights_available":True,"sttn_hardware_hint":hint}
 
+def test_sttn_is_the_default_cleanup_backend():
+    assert CleanupConfig().backend=="sttn"
+
 def test_verified_cuda_then_mps(monkeypatch,tmp_path):
-    weights=tmp_path/"sttn.pth";weights.write_bytes(b"verified")
-    monkeypatch.setattr(sttn,"WEIGHTS",weights)
-    monkeypatch.setattr(sttn,"fingerprint",lambda path:sttn.WEIGHT_HASH if path==weights else "other")
+    weight=tmp_path/'sttn.pth'; weight.write_bytes(b'fixture')
+    monkeypatch.setattr(sttn,'WEIGHTS',weight)
+    monkeypatch.setattr(sttn,'fingerprint',lambda path:sttn.WEIGHT_HASH if path==weight else 'fixture')
     monkeypatch.setattr(sttn,"capabilities",lambda:caps(["cuda:0","mps"]))
     calls=[]
     def worker(args,timeout):
@@ -103,7 +106,6 @@ def test_missing_weights_falls_back(monkeypatch,tmp_path):
     monkeypatch.setattr(sttn,"WEIGHTS",tmp_path/"missing.pth")
     monkeypatch.setattr(sttn,"PROJECT_ROOT",tmp_path)
     monkeypatch.setattr(sttn,"capabilities",lambda:caps(["mps"]))
-    monkeypatch.setattr(sttn,"ensure_weights",lambda:False)
     assert sttn.select_backend("auto")==("opencv","cpu","STTN_WEIGHTS_MISSING")
 
 def test_analysis_cache_reuses_ocr_and_invalidates_source(tmp_path):
@@ -125,9 +127,9 @@ def test_worker_timeout_is_reported(monkeypatch):
 
 
 def test_all_probes_fail_report_fallback(monkeypatch,tmp_path):
-    weights=tmp_path/"sttn.pth";weights.write_bytes(b"verified")
-    monkeypatch.setattr(sttn,"WEIGHTS",weights)
-    monkeypatch.setattr(sttn,"fingerprint",lambda path:sttn.WEIGHT_HASH if path==weights else "other")
+    weight=tmp_path/'sttn.pth'; weight.write_bytes(b'fixture')
+    monkeypatch.setattr(sttn,'WEIGHTS',weight)
+    monkeypatch.setattr(sttn,'fingerprint',lambda path:sttn.WEIGHT_HASH if path==weight else 'fixture')
     monkeypatch.setattr(sttn,"capabilities",lambda:caps(["cuda:0","mps"]))
     monkeypatch.setattr(sttn,"worker",lambda *a:(_ for _ in ()).throw(sttn.STTNError("STTN_INFERENCE_FAILED")))
     assert sttn.select_backend("auto")==("opencv","cpu","STTN_INFERENCE_FAILED")

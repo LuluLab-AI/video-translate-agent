@@ -1,14 +1,13 @@
-"""Remote cleanup and alignment decisions via LZStudio; client validates and executes."""
+"""Remote cleanup and alignment decisions via the bundled LuluLab Node.js client."""
 from __future__ import annotations
 
 import json
 import hashlib
 import os
-import platform
+import re
 import shutil
 import subprocess
 import time
-import urllib.request
 from pathlib import Path
 from typing import Callable
 
@@ -23,29 +22,7 @@ DEFAULT_WORKFLOW_ID = "VideoTranslatePolicyV1"
 TERMINAL_SUCCESS = {"succeeded", "success", "completed", "complete"}
 TERMINAL_FAILURE = {"failed", "error", "cancelled", "canceled"}
 RUNNING = {"created", "pending", "queued", "running", "processing", "inprogress", "in_progress"}
-CLI_MAX_BYTES = 12 * 1024 * 1024
-CLI_ASSETS = {
-    ("darwin", "arm64"): (
-        "bin/macos/lzstudio",
-        "https://github.com/devmaster947-hub/video-translate-agent/releases/download/v2.3.5/lzstudio-macos-arm64",
-        "7af107fa2087782763fcfb7528aa8759326c9ca4b8a04c447b42fc55528b0e7d",
-    ),
-    ("darwin", "aarch64"): (
-        "bin/macos/lzstudio",
-        "https://github.com/devmaster947-hub/video-translate-agent/releases/download/v2.3.5/lzstudio-macos-arm64",
-        "7af107fa2087782763fcfb7528aa8759326c9ca4b8a04c447b42fc55528b0e7d",
-    ),
-    ("windows", "amd64"): (
-        "bin/windows/lzstudio.exe",
-        "https://github.com/devmaster947-hub/video-translate-agent/releases/download/v2.3.5/lzstudio-windows-x64.exe",
-        "f1c61d3fd5ec0ee5b6a58957494ff21cf220098e4350a4c2f89081f60bf55ab0",
-    ),
-    ("windows", "x86_64"): (
-        "bin/windows/lzstudio.exe",
-        "https://github.com/devmaster947-hub/video-translate-agent/releases/download/v2.3.5/lzstudio-windows-x64.exe",
-        "f1c61d3fd5ec0ee5b6a58957494ff21cf220098e4350a4c2f89081f60bf55ab0",
-    ),
-}
+CLIENT_SCRIPT = PROJECT_ROOT / "scripts" / "lululab_cli.mjs"
 
 
 class PolicyError(RuntimeError):
@@ -54,80 +31,43 @@ class PolicyError(RuntimeError):
         super().__init__(code)
 
 
-def _candidate_binaries() -> list[Path]:
+def _candidate_node_binaries() -> list[Path]:
     candidates: list[Path] = []
-    override = os.environ.get("LZSTUDIO_CLI", "").strip()
-    if override:
-        candidates.append(Path(override).expanduser())
-    system = platform.system().lower()
-    if system == "windows":
-        candidates.append(PROJECT_ROOT / "bin" / "windows" / "lzstudio.exe")
-    elif system == "darwin":
-        candidates.append(PROJECT_ROOT / "bin" / "macos" / "lzstudio")
-    for name in ("lzstudio.exe", "lzstudio"):
-        found = shutil.which(name)
-        if found:
-            candidates.append(Path(found))
+    for variable in ("LULULAB_NODE", "NODE_BINARY"):
+        override = os.environ.get(variable, "").strip()
+        if override:
+            candidates.append(Path(override).expanduser())
+    found = shutil.which("node")
+    if found:
+        candidates.append(Path(found))
     return candidates
 
 
-def ensure_cli() -> Path | None:
-    asset = CLI_ASSETS.get((platform.system().lower(), platform.machine().lower()))
-    if asset is None:
-        return None
-    relative, url, expected_hash = asset
-    target = PROJECT_ROOT / relative
-    try:
-        if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == expected_hash:
-            if os.name != "nt":
-                target.chmod(0o755)
-            return target.resolve()
-    except OSError:
-        pass
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(target.name + ".download")
-    temporary.unlink(missing_ok=True)
-    request = urllib.request.Request(url, headers={"User-Agent": "video-translate-agent/2.3.5"})
-    try:
-        total = 0
-        digest = hashlib.sha256()
-        with urllib.request.urlopen(request, timeout=120) as response, temporary.open("wb") as output:
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                total += len(chunk)
-                if total > CLI_MAX_BYTES:
-                    raise OSError("CLI download exceeds size limit")
-                digest.update(chunk)
-                output.write(chunk)
-        if digest.hexdigest() != expected_hash:
-            raise OSError("CLI digest mismatch")
-        if os.name != "nt":
-            temporary.chmod(0o755)
-        temporary.replace(target)
-        return target.resolve()
-    except OSError:
-        temporary.unlink(missing_ok=True)
-        return None
-
-
-def find_cli() -> Path | None:
-    for candidate in _candidate_binaries():
+def find_node() -> Path | None:
+    for candidate in _candidate_node_binaries():
         try:
-            if candidate.is_file():
+            if not candidate.is_file():
+                continue
+            completed = subprocess.run([str(candidate), "--version"], shell=False,
+                                       capture_output=True, text=True, timeout=5)
+            match = re.fullmatch(r"v?(\d+)(?:\.\d+){1,2}\s*", completed.stdout)
+            if completed.returncode == 0 and match and int(match.group(1)) >= 18:
                 return candidate.resolve()
         except OSError:
             continue
-    return ensure_cli()
+        except subprocess.TimeoutExpired:
+            continue
+    return None
 
 
 def _api_key() -> str:
-    key = (os.environ.get("LINGZHI_API_KEY") or "").strip() or (os.environ.get("LZSTUDIO_API_KEY") or "").strip()
+    key = ((os.environ.get("LULULAB_API_KEY") or "").strip()
+           or (os.environ.get("LINGZHI_API_KEY") or "").strip()
+           or (os.environ.get("LZSTUDIO_API_KEY") or "").strip())
     if not key:
-        key = read_credential("lingzhi", strict=True) or ""
+        key = read_credential("lululab", strict=True) or ""
     if not key:
-        raise PolicyError("LINGZHI_CREDENTIAL_REQUIRED")
+        raise PolicyError("LULULAB_CREDENTIAL_REQUIRED")
     return key
 
 
@@ -136,28 +76,36 @@ def _workflow_id() -> str:
 
 
 def capabilities() -> dict:
-    cli = find_cli()
+    node = find_node()
+    client_exists = CLIENT_SCRIPT.is_file()
     try:
         has_key = bool(_api_key())
     except PolicyError:
         has_key = False
     return {
-        "policy_cli_available": cli is not None,
+        "policy_client_available": node is not None and client_exists,
+        "policy_client_kind": "nodejs",
+        "policy_node_available": node is not None,
+        "policy_node_client_available": client_exists,
+        "policy_cli_available": node is not None and client_exists,
         "policy_credential_available": has_key,
         "policy_workflow_id": _workflow_id(),
-        "policy_errors": (["LZSTUDIO_CLI_UNAVAILABLE"] if cli is None else [])
-                         + (["LINGZHI_CREDENTIAL_REQUIRED"] if not has_key else []),
+        "policy_errors": (["NODEJS_18_REQUIRED"] if node is None else [])
+                         + (["LULULAB_NODE_CLIENT_MISSING"] if not client_exists else [])
+                         + (["LULULAB_CREDENTIAL_REQUIRED"] if not has_key else []),
     }
 
 
 def _run_cli(arguments: list[str], *, timeout: float) -> dict:
-    cli = find_cli()
-    if cli is None:
-        raise PolicyError("LZSTUDIO_CLI_UNAVAILABLE")
+    node = find_node()
+    if node is None:
+        raise PolicyError("NODEJS_18_REQUIRED")
+    if not CLIENT_SCRIPT.is_file():
+        raise PolicyError("LULULAB_NODE_CLIENT_MISSING")
     key = _api_key()
-    command = [str(cli), *arguments[:2], "--api-key", key, *arguments[2:]]
+    command = [str(node), str(CLIENT_SCRIPT), *arguments[:2], "--api-key-stdin", *arguments[2:]]
     try:
-        completed = subprocess.run(command, shell=False, capture_output=True, text=True,
+        completed = subprocess.run(command, shell=False, input=key + "\n", capture_output=True, text=True,
                                    encoding="utf-8", errors="replace", timeout=timeout)
     except subprocess.TimeoutExpired:
         raise PolicyError("POLICY_CLI_TIMEOUT") from None
@@ -187,7 +135,7 @@ def _submit(payload: dict, timeout: float, *, workflow_id: str | None = None) ->
 
 
 def _unwrap_output(value):
-    # LZStudio returns the workflow result under output. Some workflow gateways
+    # LuluLab returns the workflow result under output. Some workflow gateways
     # wrap a Respond-to-Webhook body once more; unwrap only well-known wrappers.
     for _ in range(4):
         if isinstance(value, str):
@@ -231,7 +179,7 @@ def _poll(task_id: str, *, timeout: float, interval: float) -> dict:
 
 
 def request_task(payload: dict, *, workflow_id: str, timeout: float = 120.0, poll_interval: float = 0.5) -> dict:
-    """Submit one arbitrary LZStudio workflow task, then fetch the same task until terminal."""
+    """Submit one arbitrary LuluLab workflow task, then fetch the same task until terminal."""
     task_id = _submit(payload, timeout=min(30.0, max(1.0, timeout)), workflow_id=workflow_id)
     return _poll(task_id, timeout=timeout, interval=poll_interval)
 
@@ -287,6 +235,12 @@ def merge_cleanup_policy(tracks: list[dict], response: dict) -> dict:
     indexed = {str(item.get("track_id")): item for item in returned if isinstance(item, dict)}
     if len(returned) != len(tracks) or len(indexed) != len(tracks):
         raise PolicyError("POLICY_TRACK_COUNT_MISMATCH")
+    if not tracks:
+        # No stable local OCR evidence means there is no source-caption band to
+        # inherit.  Never allow an unrelated remote default to move translated
+        # subtitles into the picture or create cleanup masks.
+        return {"version": 2, "strategy": "no_stable_source_caption_evidence",
+                "default": None, "segments": {}, "source_track_ids": []}
     allowed_kinds = {"subtitle", "watermark", "scene_text"}
     for track in tracks:
         item = indexed.get(str(track["track_id"]))

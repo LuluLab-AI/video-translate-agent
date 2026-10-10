@@ -1,26 +1,35 @@
 ---
 name: video-translate-agent
-slug: video-translate-agent
-version: 2.3.5
-license: GPL-3.0-only
-displayName: 视频翻译与配音助手
-summary: 本地识别口播、清理原字幕，完成翻译、配音、音画对齐与硬字幕输出。
-tags:
-  - video
-  - translation
-  - dubbing
-  - subtitles
-  - ffmpeg
-description: Translate and visually clean a local video with Faster Whisper, sparse RapidOCR overlay detection, server-owned cleanup decisions, local GPU STTN / OpenCV caption removal, Agent-local translation, dubbing, alignment, and positioned ASS subtitles. Use when a user wants a translated dubbed MP4 with original text subtitles or watermarks removed. No GUI except the local credential setup wizard; no external translation provider, voice cloning, source-audio preservation, cloud repair model, or extra LLM API.
+description: Translate and visually clean a local video with Faster Whisper, sparse RapidOCR overlay detection, server-owned cleanup decisions, local STTN AI temporal caption removal and repair by default, Agent-local translation, dubbing, alignment, and positioned ASS subtitles. Use when a user wants a translated dubbed MP4 with original text subtitles or watermarks removed. No GUI except the local credential setup wizard; no external translation provider, voice cloning, source-audio preservation, cloud repair model, or extra LLM API.
 ---
 
 # Local video translation
 
-This distribution uses LZStudio CLI 0.0.5 on macOS ARM64 and Windows x64. The client uses an explicit `LZSTUDIO_CLI` override first, then a platform copy, then PATH; if none exists on a supported platform, it downloads the matching v2.3.5 GitHub Release asset and verifies its pinned SHA-256 before use. On macOS Intel, set `LZSTUDIO_CLI` to a compatible executable. Downloading the CLI does not configure authentication or authorize video uploads.
+This distribution includes a dependency-free Node.js LuluLab client at `scripts/lululab_cli.mjs`. It requires Node.js 18+ and calls the LuluLab Customer Service API directly; no external LuluLab executable or npm install is used. The production origin defaults to `https://customer.lululab.ai`, with an optional public `LULULAB_API_BASE_URL` override. Use `LULULAB_NODE` only when the `node` executable is not on PATH. Read [the LuluLab task API contract](docs/LULULAB_API.md) when changing transport behavior. The workflow ID and task submit/fetch semantics remain unchanged.
 
 Use the absolute path to `scripts/video_translate.py` inside this skill directory. Run all commands with the same Python environment and the same `--runtime-root` if overridden. Paths resolve relative to the skill root, not the shell cwd. Read [the CLI protocol](docs/PIPELINE.md) for error and recovery details; inspect [architecture](docs/ARCHITECTURE.md) only when debugging internals.
 
 Use `<skill-root>/.venv/Scripts/python.exe` on Windows or `<skill-root>/.venv/bin/python` on macOS, created by the matching installer, for every command below. If it is missing, follow the installation section in [README.md](README.md). Keep the entire skill folder together; do not install SKILL.md alone.
+
+## Unified interaction language and original media
+
+Use the same language precedence in Codex, Claude Code, WorkBuddy and any other Agent:
+
+1. The user's explicitly requested reply language.
+2. The principal language of the user's current substantive task message.
+3. The established task's saved interaction language when the current message contains no new language-switch information.
+4. The Agent's default reply language, only when no user task language or saved choice is available.
+5. English (`en`).
+
+The current model identifies the principal language of task prose. Numeric voice selections, asset-only uploads, filenames, command-only messages and simple confirmations (such as `3`, `OK` or `好的`) carry no new task-language signal: retain the saved language. A substantive new message in another language selects that language unless an explicit reply-language preference remains in force. Carry that preference across turns until the user changes it. Never infer interaction language from subtitles, OCR/ASR results, uploaded media, filenames, API responses, the operating-system Locale or an Agent UI setting that differs from its default reply language. Host defaults must never override user task language. Do not create a new language-confirmation checkpoint.
+
+Represent the selection as a BCP-47 tag, preserving regions/scripts when known (for example `zh-CN`, `en-US`, `pt-BR`, `es-ES`, `fr-FR`, `ja-JP`, `ko-KR`, `th-TH`, `ar-SA`). No fixed language allowlist and no third-party language detection/translation service is required. Chinese tasks receive Chinese, Portuguese tasks Portuguese, Japanese tasks Japanese, and so on; do not collapse non-Chinese languages into English. If no task message exists use the Agent default; if unavailable use English. Do not invent a regional variant when only a primary language is known.
+
+Use `interactionLocale` as the single user-facing language and `interactionLanguageSource` for its provenance. Establish one language context before user-facing output, persist it as `interaction_language.json`, and reuse it for recovery, credential setup and delivery. Read [the interaction language contract](docs/INTERACTION_LANGUAGE.md) for the CLI and complete local UI catalog format. The Agent supplies language signals to `language-context`; Python validates tags, applies the precedence and saves the result without reading media or OS locale. Before a job exists use a task-local context path; after `create`, place the same context in `jobs/<id>/interaction_language.json`. Update it when the user switches language. Keep this sidecar independent of the job's source/target choices and policy consent. Never modify `source_language`, `target_language`, TTS text, subtitle text or upstream fingerprints when interaction language changes.
+
+Use the selected language consistently for progress, questions, voice-list headings, guidance, consent, errors, credential pages and final delivery. Translate the required credential/consent/service messages below into this language while preserving their full meaning, service names and administrator contact. Their Chinese/English examples are semantic references, not a restriction on output language. CLI/Node JSON, diagnostic logs and reference documents are internal data: explain them in the chosen language rather than showing raw fixed-language prose. Preserve commands, JSON keys, stable error codes, BCP-47 tags, paths, Provider identifiers and actual voice names. Pass the saved context to credential commands. For a language without bundled UI text, use your current model to produce a complete local catalog from the documented template; validate it before opening the page. Never show partially translated UI or silently fall back to English after a language has been selected. Do not invoke a separate translation service or external LLM.
+
+Interaction language, video source language and requested target translation language are independent. Never translate or rewrite video/image asset text, speech, labels, packaging, logos, scene text or reference images merely because interaction language changed. Preserve original inputs and reference assets. Source speech defaults to `auto`; the target comes only from the user's explicit video-translation request, never the interaction language. An interface-localization request alone does not authorize media translation, dubbing, cleanup or regeneration. Explicit video translation still uses the existing algorithm and media boundary for derived outputs only.
 
 ## Normal checkpoints
 
@@ -31,49 +40,48 @@ No ASR review, translation approval, cleanup-quality review, alignment quality t
 
 ## New job
 
-Confirm the input exists, then run. Do not mention, request, or configure a Lingzhi / LZStudio API Key at startup. Local preflight, job creation, and transcription must proceed without that Key. The first Lingzhi credential checkpoint is immediately before `clean`, where the first policy request is needed:
+Confirm the input exists, then run. Do not mention, request, or configure a LuluLab API Key at startup. Local preflight, job creation, and transcription must proceed without that Key. The first LuluLab credential checkpoint is immediately before `clean`, where the first policy request is needed:
 
 ```text
 python <skill-root>/scripts/video_translate.py preflight --json
-python <skill-root>/scripts/video_translate.py create --input <absolute-video-path> --cleanup-mode local --json
+python <skill-root>/scripts/video_translate.py create --input <absolute-video-path> --cleanup-mode local --language-context <absolute-context-path> --json
 ```
 
 
 `local` keeps video processing on the client with server-owned cleanup decisions.
 
-Preflight requires the selected Provider, which defaults to ElevenLabs, plus media tools, Faster Whisper, RapidOCR, ONNX Runtime, OpenCV, and the LZStudio CLI policy channel. The policy channel uses `VideoTranslatePolicyV1` by default, configurable only through `VIDEO_TRANSLATE_POLICY_WORKFLOW_ID`; authentication is handled by LZStudio CLI. Preflight reports Lingzhi credential presence as deferred readiness information: `LINGZHI_CREDENTIAL_REQUIRED` appears only in `deferred_policy_errors`, never as a blocking startup error. The Lingzhi Key resolves from non-empty `LINGZHI_API_KEY`, then non-empty `LZSTUDIO_API_KEY`, then the persisted `lingzhi` credential. Pass `--provider minimax` only when the user explicitly requested MiniMax. Preflight does not certify remote access or voice compatibility. Resolve credentials in this order: the current process environment, then the operating-system credential vault. Never print or put API keys in task files, command arguments, logs, manifests, or responses. Only the private credential backend may persist a Key. `.env` is not automatically loaded.
+Preflight requires the selected Provider, which defaults to ElevenLabs, plus media tools, Faster Whisper, RapidOCR, ONNX Runtime, OpenCV, Node.js 18+, and the bundled LuluLab Node client. The policy channel continues to use `VideoTranslatePolicyV1` by default, configurable only through `VIDEO_TRANSLATE_POLICY_WORKFLOW_ID`. The Node client sends the raw API Key in the `Authorization` header as required by the API document; Python passes it to Node through standard input only, never a command argument or environment variable. Preflight reports LuluLab credential presence as deferred readiness information: `LULULAB_CREDENTIAL_REQUIRED` appears only in `deferred_policy_errors`, never as a blocking startup error. The LuluLab Key resolves from non-empty `LULULAB_API_KEY`, then the legacy environment names `LINGZHI_API_KEY` and `LZSTUDIO_API_KEY`, then the persisted `lululab` credential. Pass `--provider minimax` only when the user explicitly requested MiniMax. Preflight does not certify remote access or voice compatibility. Resolve credentials in this order: the current process environment, then the operating-system credential vault. Never print or put API keys in task files, command arguments, logs, manifests, or responses. Only the private credential backend may persist a Key. `.env` is not automatically loaded.
 
-### Persistent Lingzhi / LZStudio credentials
+### Persistent LuluLab credentials
 
-Users may explicitly provide `LINGZHI_API_KEY` or `LZSTUDIO_API_KEY` in chat for the requested workflow. This authorizes the Agent to persist that Key for Lingzhi. Both names share one canonical `lingzhi` credential; `lzstudio` is an alias. If the service or intended use is ambiguous, clarify without repeating the Key. Do not store credentials from unrelated attachments or unrelated secrets.
+Users may explicitly provide `LULULAB_API_KEY` in chat for the requested workflow. This authorizes the Agent to persist that Key for LuluLab. Store it under the canonical `lululab` credential. For migration, accept the legacy `LINGZHI_API_KEY` / `LZSTUDIO_API_KEY` environment names and `lingzhi` / `lzstudio` credential aliases, then expose and save the credential as `lululab`. If the service or intended use is ambiguous, clarify without repeating the Key. Do not store credentials from unrelated attachments or unrelated secrets.
 
-Do not proactively mention this credential section during preflight, job creation, or transcription. After transcription reaches `TRANSCRIBED` and immediately before `clean`, inspect `policy_credential_available`. If it is false, stop before the policy request and tell the user exactly:
+Do not proactively mention this credential section during preflight, job creation, or transcription. After transcription reaches `TRANSCRIBED` and immediately before `clean`, inspect `policy_credential_available`. If it is false, stop before the policy request and tell the user in the selected interaction language (translate these semantic examples for other languages):
 
-> 即将进行字幕清理，需要灵智工坊 API Key。请前往 [https://www.lingzhiai.com.cn/](https://www.lingzhiai.com.cn/) 获取。
+- Chinese: 即将进行字幕清理，需要 LuluLab API Key。请从 LuluLab 官方渠道获取。
+- English: Subtitle cleanup requires a LuluLab API Key. Please obtain one through official LuluLab channels.
 
-Always preserve this exact Key-acquisition URL, including `www`: `https://www.lingzhiai.com.cn/`. Never remove the `www` host label; the shortened host is not a usable entry point.
-
-Then offer the hidden local input (`credential-set --provider lingzhi`) as the preferred save method, or explain that the user may explicitly choose chat input. Do not ask the user for the Key in chat by default. If a matching Key is already available, do not mention authorization and continue to the metadata-consent checkpoint.
+Do not invent or reuse a retired brand URL when no LuluLab Key-acquisition URL is configured. Then offer the hidden local input (`credential-set --provider lululab --language-context <absolute-context-path>`) as the preferred save method, or explain that the user may explicitly choose chat input. Do not ask the user for the Key in chat by default. If a matching Key is already available, do not mention authorization and continue to the metadata-consent checkpoint.
 
 Start this command as an interactive process, send only the raw Key plus one newline to its standard input, and wait for the secret-free JSON result:
 
 ```text
-python <skill-root>/scripts/video_translate.py credential-set --provider lingzhi --stdin --json
+python <skill-root>/scripts/video_translate.py credential-set --provider lululab --stdin --json
 ```
 
 Never repeat, quote, summarize or place the Key in commentary, responses, displayed commands, environment assignments, shell piping/echo, logs or temporary task files. The bounded stdin reader accepts one non-empty line up to 4096 characters. Use the existing private macOS local-user credential file (directory mode `700`, file mode `600`) or Windows Credential Manager, never macOS Keychain. Persistence survives future conversations, process restarts and Skill upgrades on this computer until explicitly deleted or replaced; it does not synchronize across computers.
 
-After saving, run `credential-status --json` and automatically rerun preflight, then resume the existing job if present. Report only that Lingzhi was saved; storage success does not verify remote authorization. Automatically reuse it for subsequent jobs without asking again. Warn that a chat-sent Key may remain in conversation history; recommend deleting the original message and rotating the Key if disclosure was unintended. Delete only on explicit request with `credential-delete --provider lingzhi --json`.
+After saving, run `credential-status --json` and automatically rerun preflight, then resume the existing job if present. Report only that LuluLab was saved; storage success does not verify remote authorization. Automatically reuse it for subsequent jobs without asking again. Warn that a chat-sent Key may remain in conversation history; recommend deleting the original message and rotating the Key if disclosure was unintended. Delete only on explicit request with `credential-delete --provider lululab --json`.
 
 When default preflight returns `ELEVENLABS_CREDENTIAL_REQUIRED`, immediately run the following command and tell the user that the secure setup page opened. Do not ask them to type a terminal command. The browser wizard is the default because a Key pasted into chat becomes part of chat history:
 
 ```text
-python <skill-root>/scripts/video_translate.py credential-setup --json
+python <skill-root>/scripts/video_translate.py credential-setup --language-context <absolute-context-path> --json
 ```
 
-The command opens a temporary Chinese setup page on `127.0.0.1` and the official ElevenLabs API Keys page. The user creates a restricted key, pastes it only into the local password field, and submits it. The wizard verifies `models_read` and `voices_read` without TTS spend, then stores the key in a macOS local-user credential file with directory mode `700` and file mode `600`, or in Windows Credential Manager. It exits on success, cancellation, or ten-minute timeout. It never writes the key into task files, logs, command arguments, browser storage, or responses, and it must not use macOS Keychain because that can trigger an unfamiliar login-keychain password prompt.
+The command opens a temporary setup page in the selected interaction language on `127.0.0.1` and the official ElevenLabs API Keys page. The user creates a restricted key, pastes it only into the local password field, and submits it. The wizard verifies `models_read` and `voices_read` without TTS spend, then stores the key in a macOS local-user credential file with directory mode `700` and file mode `600`, or in Windows Credential Manager. It exits on success, cancellation, or ten-minute timeout. It never writes the key into task files, logs, command arguments, browser storage, or responses, and it must not use macOS Keychain because that can trigger an unfamiliar login-keychain password prompt.
 
-If automatic browser opening fails, use the safe `setup_url` printed with `BROWSER_OPEN_FAILED` to open the local page for the user. If the local wizard cannot be used, fall back to the hidden terminal prompt with `credential-set --provider elevenlabs`; this is the only normal use of the legacy command. After successful setup, rerun preflight automatically.
+If automatic browser opening fails, use the safe `setup_url` printed with `BROWSER_OPEN_FAILED` to open the local page for the user. If the local wizard cannot be used, fall back to the hidden terminal prompt with `credential-set --provider elevenlabs --language-context <absolute-context-path>`; this is the only normal use of the legacy command. After successful setup, rerun preflight automatically.
 
 If the user explicitly chooses to send an API Key in chat, or has already sent one, treat that message as authorization to save that Key for the requested Provider. Never repeat, quote, summarize, log, or place the Key in commentary, responses, a command argument, an environment variable, or a temporary file. Start the following command in an interactive process, send only the raw Key plus one newline to its standard input, and wait for the secret-free JSON result:
 
@@ -83,7 +91,7 @@ python <skill-root>/scripts/video_translate.py credential-set --provider elevenl
 
 Do not interpolate the Key into the displayed command or use shell piping/echo. The stdin reader accepts one non-empty line up to 4096 characters and stores it through the same platform credential backend. After success, run `credential-status --json` and rerun preflight; tell the user only that the Provider was saved. Also warn that the original chat message may remain in chat history and recommend deleting that message or rotating the Key if exposure was unintended. Never request the Key in chat as the default setup method.
 
-When the user explicitly requests MiniMax, use `preflight --provider minimax` and the legacy hidden `credential-set --provider minimax` flow. The same `--stdin` handling is allowed only if the user explicitly chooses or has already sent a MiniMax Key. Never start ElevenLabs setup for an explicit MiniMax job.
+When the user explicitly requests MiniMax, use `preflight --provider minimax` and the legacy hidden `credential-set --provider minimax --language-context <absolute-context-path>` flow. The same `--stdin` handling is allowed only if the user explicitly chooses or has already sent a MiniMax Key. Never start ElevenLabs setup for an explicit MiniMax job.
 
 Use `credential-status --json` to verify only the Provider name. Once stored, automatically reuse it on later turns and jobs. `credential-delete --provider <provider>` removes it when explicitly requested. Environment variables remain a temporary higher-priority override.
 
@@ -96,7 +104,9 @@ python <skill-root>/scripts/video_translate.py clean --job <id> --json
 
 The clean command performs sparse OCR and text-track construction locally, then submits one `cleanup_policy` task to VideoTranslatePolicyV1 with OCR text, track positions/times, source segment times and video metadata. The server alone decides classification, cleanup eligibility and dominant subtitle layout. After dubbing, one separate `alignment_policy` task sends segment IDs/start times, video duration and measured TTS durations. Neither policy uploads video or audio. Do not combine the stages or wait for TTS before cleanup. Saved fingerprint-checked policy results are reused; when a task ID was saved, recovery polls that same task. Do not substitute local policy rules.
 
-- `local`: local OCR and remote cleanup decisions guide local mask construction. With cleanup.backend=auto (default), use STTN on verified CUDA first, then MPS / Apple GPU; otherwise use OpenCV. STTN runs locally with a pinned SHA-256-verified weight downloaded from the v2.3.5 GitHub release on GPU hosts, 2.5-second chunks, 432×240 inference and a 300-second timeout per chunk. Use actual video track masks and positions, never sample-specific coordinates. Cache completed chunks with input/output fingerprints. Repair missing GPU dependencies/weights locally; on out-of-memory halve chunk length, retry at most twice. If STTN remains unavailable or fails, rerun the whole cleanup with OpenCV using the same OCR analysis and explicitly report the fallback reason. cleanup.backend=opencv forces OpenCV; sttn requests GPU STTN with the same documented fallback. The installer prepares optional GPU dependencies; preflight reports availability without blocking CPU-only machines. The selected backend repairs frames, and writes `clean/video.mp4`, `overlay_analysis.json`, `subtitle_layout.json`, masks, reports, and diagnostic previews.
+Before remote classification, apply the deterministic OCR evidence gate: a text track must normally be observed in at least `cleanup.min_ocr_track_observations` sampled frames (default `3`). For a very short video with fewer available samples, cap the effective threshold at one less than the scheduled sample count because seeking the exact final timestamp may miss the last frame. One- or two-frame OCR hits in normal-length jobs are unstable detections, not classifiable tracks; discard them before policy submission so they cannot create cleanup masks or define the target subtitle band. This gate may only remove insufficient evidence and must never promote a track to subtitle or watermark. When no stable tracks remain, preserve the picture without OCR-derived masks, persist a `no_stable_source_caption_evidence` layout with `default: null`, and let the renderer use its safe bottom subtitle fallback. Record configured/effective thresholds and discarded counts in `overlay_analysis.json` under `ocr_track_filter`.
+
+- `local`: local OCR and remote cleanup decisions guide local mask construction. Use `cleanup.backend=sttn` by default so subtitle erasure and frame repair run through the STTN AI temporal inpainting path. Select verified CUDA first, then MPS / Apple GPU. STTN runs locally with bundled weights, 2.5-second temporal chunks, 432×240 inference and a 300-second timeout per chunk. Use actual video track masks and positions, never sample-specific coordinates. Cache completed chunks with input/output fingerprints. Repair missing GPU dependencies/weights locally; on out-of-memory halve chunk length, retry at most twice. If STTN is unavailable or still fails, rerun the whole cleanup with OpenCV using the same OCR analysis and explicitly report the fallback reason; OpenCV is a compatibility fallback, not the default repair path. `cleanup.backend=opencv` explicitly forces OpenCV, while legacy `auto` retains capability-based selection. The installer prepares optional GPU dependencies; preflight reports availability without blocking CPU-only machines. The selected backend repairs frames, and writes `clean/video.mp4`, `overlay_analysis.json`, `subtitle_layout.json`, masks, reports, and diagnostic previews.
 
 If either cleanup/alignment policy is unavailable or returns an invalid contract, treat it as a technical failure rather than silently using local heuristics.
 
@@ -129,9 +139,10 @@ Filter the returned list to the selected Provider before presenting the voice ch
 
 When polish or translation validation fails, fix the editable file against its validated source without asking the user. Do not alter frozen upstream files to make a validator pass.
 
-Immediately before `clean`, after the Lingzhi credential is available, obtain any missing metadata-transfer authorization using this short Chinese sentence:
+Immediately before `clean`, after the LuluLab credential is available, obtain any missing metadata-transfer authorization in the selected interaction language (translate these semantic examples for other languages):
 
-> 本任务需向灵智发送字幕文字、位置和时间，以及配音时长，用于字幕清理和音画对齐，不上传视频或音频。是否允许？
+- Chinese: 本任务需向 LuluLab 发送字幕文字、位置和时间，以及配音时长，用于字幕清理和音画对齐，不上传视频或音频。是否允许？
+- English: This task needs to send subtitle text, positions and timings, plus dubbing durations, to LuluLab for subtitle cleanup and audio/video alignment. No video or audio is uploaded to LuluLab. Do you allow this?
 
 This covers both policy actions in the same job, including TTS duration measured later. Persist the granted scope as `policy_consent.json` in that job directory (`scope: cleanup_and_alignment_metadata`, `granted: true`). Record it only after explicit consent or an existing explicit authorization covering that scope; never infer approval from elapsed time. On recovery reuse granted consent, and do not ask once per action. Do not initiate `clean` without this consent. If the customer asks what is sent, explain that metadata also includes video duration and source segment timings. Separately disclose that translated text is sent to the selected TTS Provider; existing matching consent can be reused. This does not bypass platform tool approvals.
 
@@ -149,11 +160,11 @@ Automatically proceed through these steps, fixing ordinary technical problems wi
 
 ## Resume across turns
 
-Always run `status --job <id> --json` first; read saved `policy_consent.json` and reuse matching consent; do not rely on conversation memory. Preserve the same job ID.
+Always run `status --job <id> --json` first; read `interaction_language.json` and apply the language precedence above; read saved `policy_consent.json` and reuse matching consent; do not rely on conversation memory. Preserve the same job ID.
 
 - `CREATED`: ask only if the target language is missing; otherwise run `transcribe` with an explicit source language when supplied, or `auto` by default.
 - `LANG_CONFIRMED`: `transcribe` with the manifest's saved languages.
-- `TRANSCRIBED`: check deferred Lingzhi credential readiness. If missing, show the official Key URL and wait for configuration; otherwise obtain any missing cleanup/alignment metadata consent, then run `clean`.
+- `TRANSCRIBED`: check deferred LuluLab credential readiness. If missing, show the LuluLab Key guidance and wait for configuration; otherwise obtain any missing cleanup/alignment metadata consent, then run `clean`.
 - `CLEANED`: read raw, finish your own polish edit, `validate-polish`; never repeat cleanup.
 - `POLISHED`: translate `segments_translation.json` locally with your current model, then `validate-translation`.
 - `TRANSLATED`: `voices`.
@@ -171,7 +182,7 @@ Python owns timing execution, while the remote alignment policy decides the per-
 
 ## Service authorization output
 
-Lingzhi is a service authorization channel. Do not query or calculate its account usage, or disclose its credits, balance, limits, deductions, or administrator reset mechanism in progress, consent, summaries, or error explanations. Do not display raw Lingzhi responses or run its account/billing commands. Preserve the external data-transfer disclosure above. For `SKILL_SERVICE_UNAVAILABLE`, stop further submissions and report exactly: `Skill授权异常，请联系管理员处理，微信：marlon1102`. Keep the job and completed artifacts; after the administrator restores service, resume through the existing fingerprint-validated recovery flow. Do not automatically retry this error or bypass remote authorization. Other technical errors retain their normal recovery behavior. This rule concerns Lingzhi only; customer-owned ElevenLabs/MiniMax errors remain accurate.
+LuluLab is a service authorization channel. Do not query or calculate its account usage, or disclose its credits, balance, limits, deductions, or administrator reset mechanism in progress, consent, summaries, or error explanations. Do not display raw LuluLab responses or run its account/billing commands. Preserve the external data-transfer disclosure above. For `SKILL_SERVICE_UNAVAILABLE`, stop further submissions and report this meaning in the selected interaction language (examples: Chinese: `Skill授权异常，请联系管理员处理，微信：marlon1102`; English: `Skill authorization error. Please contact the administrator via WeChat: marlon1102`). Keep the stable error code unchanged; translate any fixed-language CLI explanation for the user without displaying the raw service response. Keep the job and completed artifacts; after the administrator restores service, resume through the existing fingerprint-validated recovery flow. Do not automatically retry this error or bypass remote authorization. Other technical errors retain their normal recovery behavior. This rule concerns LuluLab only; customer-owned ElevenLabs/MiniMax errors remain accurate.
 
 ## Policy failure recovery
 

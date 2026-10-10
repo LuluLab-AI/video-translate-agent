@@ -1,4 +1,4 @@
-"""Sanitize the Lingzhi service boundary without exposing account metadata."""
+"""Sanitize the LuluLab service boundary without exposing account metadata."""
 import json
 import re
 

@@ -1,6 +1,7 @@
 """Single-stage CLI; Agent supplies the two human choices and polish editing."""
 import argparse
 import json
+from pathlib import Path
 from pydantic import ValidationError
 import yaml
 
@@ -18,14 +19,25 @@ from .workflow import next_action, job_config
 from .network import ProviderError
 from .policy_client import PolicyError, capabilities as policy_capabilities
 from .state import JobStore, StateError
+from .interaction_language import (InteractionLanguageError, load_language_context,
+    save_language_context, select_interaction_language, ui_catalog, normalize_language_tag, saved_reply_preference)
 
 
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description="Local Agent video translation workflow")
     commands = root.add_subparsers(dest="command", required=True)
-    for name in ("credential-setup", "credential-set", "credential-status", "credential-delete", "preflight", "create", "status", "transcribe", "clean", "validate-polish", "validate-translation", "voices", "dub", "align", "render"):
+    for name in ("language-context", "credential-setup", "credential-set", "credential-status", "credential-delete", "preflight", "create", "status", "transcribe", "clean", "validate-polish", "validate-translation", "voices", "dub", "align", "render"):
         command = commands.add_parser(name)
         command.add_argument("--json", action="store_true", help="JSON output (also the default)")
+        command.add_argument("--ui-language", type=normalize_language_tag, help="Selected interaction language (BCP-47)")
+        command.add_argument("--language-context", type=Path, help="Saved task interaction language JSON")
+        command.add_argument("--agent-language", type=normalize_language_tag, help="Agent default reply language, never OS locale")
+        command.add_argument("--ui-text", type=Path, help="Complete local UI catalog JSON for the selected language")
+        if name == "language-context":
+            command.add_argument("--context-file", type=Path, required=True)
+            command.add_argument("--reply-language", type=normalize_language_tag, help="User's explicitly requested reply language")
+            command.add_argument("--task-language", type=normalize_language_tag, help="Principal language of substantive user task prose")
+            continue
         if name in ("credential-set", "credential-delete"):
             command.add_argument("--provider", required=True, choices=CREDENTIAL_PROVIDERS)
         if name == "credential-set":
@@ -55,25 +67,46 @@ def parser() -> argparse.ArgumentParser:
     return root
 
 
+def interaction_context(args):
+    """One context for credential UI and CLI human messages; no media-derived signals."""
+    path = args.language_context
+    if path is None and getattr(args, "job", None):
+        config = load_config(args.config, runtime_root=args.runtime_root)
+        path = JobStore(config.runtime_root).directory(args.job) / "interaction_language.json"
+    return select_interaction_language(explicit=args.ui_language or saved_reply_preference(path),
+        saved=load_language_context(path), agent_default=args.agent_language)
+
+
 def execute(args) -> tuple[dict, int]:
+    if args.command == "language-context":
+        context = select_interaction_language(explicit=args.reply_language or args.ui_language or saved_reply_preference(args.context_file),
+            task_language=args.task_language, saved=load_language_context(args.context_file),
+            agent_default=args.agent_language)
+        save_language_context(args.context_file, context)
+        return context.as_dict(), 0
     if args.command == "credential-setup":
         return run_credential_setup(timeout_seconds=args.timeout_seconds,
-                                    open_browser=not args.no_open), 0
+                                    open_browser=not args.no_open, ui_language=interaction_context(args).language,
+                                    ui_text=args.ui_text), 0
     if args.command == "credential-set":
-        if args.provider == "lzstudio":
-            args.provider = "lingzhi"
+        if args.provider in ("lingzhi", "lzstudio"):
+            args.provider = "lululab"
         if args.stdin:
             store_credential_from_stream(args.provider)
         else:
-            store_credential(args.provider)
+            if args.ui_language or args.language_context or args.agent_language or args.ui_text:
+                labels = ui_catalog(interaction_context(args).language, args.ui_text)
+                store_credential(args.provider, prompt=labels["credential_prompt"].format(provider=args.provider))
+            else:
+                store_credential(args.provider)
         return {"provider": args.provider, "stored": True,
                 "storage": credential_storage_name()}, 0
     if args.command == "credential-status":
         configured = [provider for provider in STORED_PROVIDERS if read_credential(provider, strict=True)]
         return {"stored_providers": configured, "storage": credential_storage_name()}, 0
     if args.command == "credential-delete":
-        if args.provider == "lzstudio":
-            args.provider = "lingzhi"
+        if args.provider in ("lingzhi", "lzstudio"):
+            args.provider = "lululab"
         deleted = delete_credential(args.provider)
         return {"provider": args.provider, "deleted": deleted,
                 "storage": credential_storage_name()}, 0
@@ -107,16 +140,16 @@ def execute(args) -> tuple[dict, int]:
                 report["errors"].append(error)
         policy = policy_capabilities()
         report.update({key: value for key, value in policy.items() if key != "policy_errors"})
-        # A Lingzhi key is not needed for local setup, job creation, or
+        # A LuluLab key is not needed for local setup, job creation, or
         # transcription. Keep reporting its presence, but defer the blocking
         # credential gate until the first policy-backed stage (`clean`).
         deferred_policy_errors = [
             error for error in policy["policy_errors"]
-            if error == "LINGZHI_CREDENTIAL_REQUIRED"
+            if error == "LULULAB_CREDENTIAL_REQUIRED"
         ]
         report["errors"].extend(
             error for error in policy["policy_errors"]
-            if error != "LINGZHI_CREDENTIAL_REQUIRED"
+            if error != "LULULAB_CREDENTIAL_REQUIRED"
         )
         report["deferred_policy_errors"] = deferred_policy_errors
         report["policy_credential_required_at"] = "clean"
@@ -131,6 +164,8 @@ def execute(args) -> tuple[dict, int]:
         if args.cleanup_mode:
             config = config.model_copy(update={"cleanup": config.cleanup.model_copy(update={"mode": args.cleanup_mode})})
         manifest = store.create(source, config.snapshot())
+        save_language_context(store.directory(manifest.job_id) / "interaction_language.json",
+                              interaction_context(args))
         return {"manifest": manifest.model_dump(mode="json"),
                 "duration_ms": info["duration_ms"], "next_action": "CONFIRM_LANGUAGES",
                 "next_stage_implemented": True}, 0
@@ -177,7 +212,7 @@ def main(argv=None) -> int:
         result, code = execute(args)
     except (ValidationError, StateError, CredentialError, CredentialSetupError, ValueError, yaml.YAMLError) as exc:
         # ValidationError may embed submitted secret values. Never stringify it.
-        error = str(exc) if isinstance(exc, (CredentialError, CredentialSetupError)) else "INVALID_CONFIG_OR_STATE"
+        error = str(exc) if isinstance(exc, (CredentialError, CredentialSetupError, InteractionLanguageError)) else "INVALID_CONFIG_OR_STATE"
         result, code = {"error": error, "stage": args.command}, 2
     except (MediaError, ASRError, ProviderError, PolicyError) as exc:
         result, code = {"error": str(exc), "stage": args.command}, 1
@@ -189,8 +224,13 @@ def main(argv=None) -> int:
             result, code = {"error": exc.code, "stage": args.command}, 1
         else:
             result, code = {"error":"UNEXPECTED_STAGE_FAILURE", "stage":args.command},1
-    from .service_access import SERVICE_ERROR, SERVICE_MESSAGE
+    from .service_access import SERVICE_ERROR
     if result.get("error") == SERVICE_ERROR or result.get("manifest", {}).get("error") == SERVICE_ERROR:
-        result["message"] = SERVICE_MESSAGE
+        try:
+            result["message"] = ui_catalog(interaction_context(args).language, args.ui_text)["service_unavailable"]
+        except (ValueError, OSError):
+            # Keep the original service code; Agent translates it using the context.
+            # Do not inject another language when local text is unavailable.
+            pass
     print(json.dumps({"ok": code == 0, **result}, ensure_ascii=False))
     return code

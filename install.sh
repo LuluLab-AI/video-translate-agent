@@ -3,9 +3,6 @@ set -eu
 
 skill_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 python_command=${PYTHON:-python3}
-if [ -f "$skill_root/bin/macos/lzstudio" ]; then
-  chmod u+x "$skill_root/bin/macos/lzstudio"
-fi
 
 "$python_command" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' || {
   echo 'Install Python 3.10+ and add python3 to PATH.' >&2
@@ -13,6 +10,11 @@ fi
 }
 command -v ffmpeg >/dev/null 2>&1 || { echo 'Install ffmpeg and add it to PATH.' >&2; exit 1; }
 command -v ffprobe >/dev/null 2>&1 || { echo 'Install ffprobe and add it to PATH.' >&2; exit 1; }
+command -v node >/dev/null 2>&1 || { echo 'Install Node.js 18+ and add node to PATH.' >&2; exit 1; }
+node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 18 ? 0 : 1)' || {
+  echo 'Install Node.js 18 or newer.' >&2
+  exit 1
+}
 
 "$python_command" -m venv "$skill_root/.venv"
 venv_python="$skill_root/.venv/bin/python"

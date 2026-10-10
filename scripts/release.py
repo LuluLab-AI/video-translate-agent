@@ -10,17 +10,18 @@ import tempfile
 import zipfile
 
 ROOT = Path(__file__).resolve().parent.parent
-FILES = ('SKILL.md', 'README.md', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md',
-         'pyproject.toml', 'install.ps1', 'install.sh',
-         'video_translate/vendor/sttn/LICENSE.md')
-TREES = {'scripts': {'.py'}, 'video_translate': {'.py'}, 'agents': {'.yaml'},
-         'config': {'.yaml', '.json'}, 'docs': {'.md'}, 'tests': {'.py'}}
+FILES = ('SKILL.md', 'README.md', 'README.zh-CN.md', 'CHANGELOG.md', '.gitignore', 'LICENSE', 'LICENSE.md', 'THIRD_PARTY_NOTICES.md',
+         'pyproject.toml', '.env.example', 'install.ps1', 'install.sh',
+         'video_translate/vendor/sttn/LICENSE', 'video_translate/vendor/sttn/LICENSE.md')
+TREES = {'scripts': {'.py', '.mjs'}, 'video_translate': {'.py'},
+         'config': {'.yaml', '.json'}, 'docs': {'.md'}, 'tests': {'.py', '.mjs'}}
 FORBIDDEN = {'jobs', 'output', '.venv', '__pycache__', '.pytest_cache', '.git',
              '.env', 'node_modules', '.cache', 'models'}
-MARKERS = ('sk-', 'MINIMAX_API_KEY=', 'ELEVENLABS_API_KEY=', 'LINGZHI_API_KEY=', 'LZSTUDIO_API_KEY=', 'Authorization:', 'Bearer ')
+MARKERS = ('sk-', 'MINIMAX_API_KEY=', 'ELEVENLABS_API_KEY=', 'LULULAB_API_KEY=',
+           'LINGZHI_API_KEY=', 'LZSTUDIO_API_KEY=', 'Authorization:', 'Bearer ')
 FAKES = {'a', 'b', 'first-secret', 'second-secret', 'sensitive-value-123',
          'never-persist-this-key', 'private-test-key', 'fixture-key', 'Bearer secret', 'secret', 'test'}
-BINARY_FILES = ()
+BINARY_FILES = ()  # The installer obtains verified STTN weights for the target machine.
 
 
 def payload(root):
@@ -51,7 +52,7 @@ def scan(root):
         if re.search(r'\bsk-[A-Za-z0-9_-]{16,}|\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]+\.', content):
             suspects.add(rel)
         for line in content.splitlines():
-            if re.match(r'\s*(?:MINIMAX|ELEVENLABS|LINGZHI|LZSTUDIO)_API_KEY\s*=', line):
+            if re.match(r'\s*(?:MINIMAX|ELEVENLABS|LULULAB|LINGZHI|LZSTUDIO)_API_KEY\s*=', line):
                 if line.split('=', 1)[1].strip():
                     suspects.add(rel)
             if re.search(r'Bearer\s+[A-Za-z0-9_.-]{16,}', line):
@@ -88,7 +89,8 @@ def build():
     report = scan(ROOT)
     dist = ROOT / 'dist'
     dist.mkdir(exist_ok=True)
-    staging = dist / 'staging-v2.3.5-marketplace' / 'video-translate-agent'
+    version = __import__('tomllib').loads((ROOT / 'pyproject.toml').read_text(encoding='utf-8'))['project']['version']
+    staging = dist / f'staging-v{version}' / 'video-translate-agent'
     # Fail instead of deleting an existing staging directory.
     staging.mkdir(parents=True, exist_ok=False)
     for source in payload(ROOT):
@@ -96,7 +98,7 @@ def build():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
     scan(staging)
-    archive = dist / 'video-translate-agent-v2.3.5-marketplace.zip'
+    archive = dist / f'video-translate-agent-v{version}.zip'
     with zipfile.ZipFile(archive, 'x', zipfile.ZIP_DEFLATED) as z:
         for p in payload(staging):
             z.write(p, 'video-translate-agent/' + p.relative_to(staging).as_posix())
